@@ -30,18 +30,19 @@ A\\
 B\\
 \end{bmatrix}
 $$
+
 $$
 X^T = \begin{bmatrix}
 A^T
 &B^T
 \end{bmatrix}
 $$
+
 $$
 X*X^T = \begin{bmatrix}
 r_{AA} & r_{AB}  \\
 r_{BA} & r_{BB
 }  \\
-
 \end{bmatrix}
 $$
 至此, 得到了所有样本之间的相关度
@@ -101,7 +102,7 @@ $$
 
 之所以直接进行拼接, 是因为Transformer只能处理三维数据(batch_size, vocal_size, embedding_dimension)
 
-如果再将n个头单独作为一个维度, 那么就变成四维数据了, 无法进行处理, 因此只能在embedding_dimension里直接进行拼接
+如果再将n个头单独作为一个维度, 那么就变成四维数据了, 无法进行处理, 因此只能在里直接进行拼接, 是最终拼接完的结果等于`embedding_dimension`
 
 ![alt text](image-1.png)
 
@@ -122,3 +123,171 @@ $$
 *   在Decoder层, 输入的是对标签进行embedding的结果
 *   Decoder和Encoder的层数应该保持一致, 一般是6层
 *   对于1-5层Encoder, 它们只会把编码好结果传递给下一层Encoder, 只有**第6层Encoder会把结果分别传递给6个Decoder**
+
+
+**总结对比**
+
+| **模型结构**         | **特点**                     | **典型应用场景**                   | **代表模型**              |
+|-------------------|--------------------------|------------------------------|------------------------|
+| **Encoder-Only**  | 专注于输入序列的表示           | 文本分类、序列标注、语义嵌入生成       | BERT, RoBERTa          |
+| **Decoder-Only**  | 专注于序列生成（自回归方式）     | 文本生成、语言建模、对话系统           | GPT, GPT-3             |
+| **Encoder+Decoder** | 处理序列到序列的转换任务         | 机器翻译、文本摘要、问答系统、图像描述生成 | Transformer, T5, BART |
+
+
+*   GPT 将输入指令和目标输出拼接成一个连续序列, 通过自回归机制生成序列，逐步预测下一个标记，直到生成完整输出. 输入和输出是同一序列，不需要显式的编码器-解码器交互, 因此不是seq2seq类型
+
+## Pytorch实现Transformer
+### Encoder Only
+
+Pytorch中没有完整的Transformer架构, 只有用于构建Transformer的各个层. (想完整使用最好用hugging face)
+
+| **类名称**                        | **作用**                                                     |
+|----------------------------------|------------------------------------------------------------|
+| `nn.Transformer`                 | 不带输入与输出层的 Transformer 模型，同时具备编码器和解码器 |
+| `nn.TransformerEncoder`          | Transformer 编码器的堆叠层，可以控制 Nx 的 N 的具体数字     |
+| `nn.TransformerDecoder`          | Transformer 解码器的堆叠层，可以控制 Nx 的 N 的具体数字     |
+| `nn.TransformerEncoderLayer`     | **Transformer 编码器层，由自注意力和前馈网络组成**  |
+| `nn.TransformerDecoderLayer`     | **Transformer 解码器层，由自注意力、编码器-解码器注意力和前馈网络组成**|
+| `nn.MultiheadAttention`          | 多头注意力机制                                              |
+| `nn.LayerNorm`                   | 层归一化层                                                 |
+| `nn.Embedding`                   | 嵌入层，用于将输入序列转换为嵌入表示                      |
+
+
+`nn.TransformerEncoderLayer`的参数:
+
+| **参数名**            | **说明**                                                                                                     |
+|----------------------|------------------------------------------------------------------------------------------------------------|
+| `d_model`            | 输入的嵌入维度（Embedding 过程中规定的特征维度），数学公式中的 $d_k$                                    |
+| `nhead`              | 多头注意力机制中的头数，在代码中通常表示为 `num_heads`  **注意头数需要能被  $d_k$整除, 因为特征维度会根据头数进行切分**                                                |
+| `dim_feedforward`    | 前馈网络的隐藏层维度，默认值为 2048                                                                         |
+| `dropout`            | Dropout 概率，默认值 0.1。Transformer 中 Dropout 通常放置在自注意力层后、残差连接之前，前馈网络层后、残差连接之前, 主要是为了对抗过拟合 |
+| `activation`         | 激活函数，默认值为 `relu`                                                                                   |
+| `layer_norm_eps`     | 层归一化的 epsilon 值，默认值为 `1e-05`                                                                     |
+| `batch_first`        | 如果为 `True`，则输入和输出张量的形状为 `(batch_size, seq_len, feature)`；否则为 `(seq_len, batch_size, feature)`。默认值为 `False` |
+| `norm_first`         | 如果为 `True`，则执行前馈网络之前进行层归一化。默认值为 `False`                                             |
+| `bias`              | 如果为 `True`，则在线性层中使用偏置。默认值为 `True`                                                       |
+| `device`            | 指定层的设备，默认值为 `None`                                                                               |
+| `dtype`             | 指定层的数据类型，默认值为 `None`                                                                           |
+```python
+import torch
+import torch.nn as nn
+
+# 定义 Transformer 编码器层
+encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8, batch_first=True)
+
+# 创建随机输入数据，形状为 (batch_size=32, seq_len=10, d_model=512)
+src = torch.rand(32, 10, 512)
+
+# 将输入数据通过编码器层
+out = encoder_layer(src)
+```
+
+实例化后可以输入的内容有:
+
+| **实例化后-参数名称**         | **说明**                                                                                       |
+|-----------------------------|------------------------------------------------------------------------------------------------|
+| `src`                       | 输入到编码器层的序列（**必填**）。                                                             |
+| `src_mask`                  | 输入序列的掩码矩阵（**可选**），默认接收形状为 `(seq_len, seq_len)` 的二维矩阵。<br>通常该参数默认是执行**前瞻掩码**，在编码器（Encoder）中很少使用。 |
+| `src_key_padding_mask`      | 输入序列的**填充掩码矩阵**（**可选**），默认接收形状为 `(batch_size, seq_len)` 的二维矩阵。<br>该参数仅用于**填充掩码**。 |
+
+前瞻掩码和填充掩码的区别
+
+| **对比维度**       | **填充掩码（Padding Mask）**                  | **前瞻掩码（Look-Ahead Mask）**                |
+|------------------|--------------------------------------------|--------------------------------------------|
+| **作用**         | 为了统一输入长度，短序列会在末尾或开头填充特殊符号, 因此在计算注意力时需要**屏蔽输入中的填充位**                              | 屏蔽未来的信息，防止模型“偷看”未来的内容         |
+| **应用场景**     | 编码器和解码器（Encoder & Decoder）             | 主要用于解码器（Decoder）                    |
+| **掩码矩阵形状** | `(batch_size, seq_len)`                      | `(seq_len, seq_len)`                      |
+| **示例掩码**     | `[0, 0, 1, 1, 1]`（填充位为 1）               | 上三角矩阵（对角线以上为 -∞，对角线以下为 0）   |
+
+
+```python
+# 单一的编码器
+encoder_layers = nn.TransformerEncoderLayer(
+    d_model, 
+    nhead, 
+    dim_feedforward, 
+    dropout, 
+    batch_first=False
+)
+
+# 打包编码器
+self.transformer_encoder = nn.TransformerEncoder(
+    encoder_layers, 
+    num_layers=num_encoder_layers
+)
+
+self.d_model = d_model
+
+# 输出 - 线性层将编码器输出映射到目标维度（此处输出维度为1）
+self.fc_out = nn.Linear(d_model, 1)
+
+def forward(self, src, src_mask=None, src_key_padding_mask=None):
+    # 第一步：进 embedding，输入数据结构应该是 (batch_size, seq_len)
+    src = self.embedding(src) * torch.sqrt(torch.tensor(self.d_model, dtype=torch.float)) #这一步进行了scaling
+    src = self.pos_encoder(src)  #位置编码
+    
+    # Transformer 编码器
+    output = self.transformer_encoder(
+        src, 
+        mask=src_mask, 
+        src_key_padding_mask=src_key_padding_mask
+    )
+    
+
+    # 均值层 平均池化, 获得序列的固定长度表示; 如果Encoder的结果直接给Decoder用, 就不需要这一步
+    # 平均池化指的是对某个维度额数据取平均值来代替该维度的变量, 从而达到降维的效果
+    output = output.mean(dim=1)
+    
+    # 全连接层输出
+    output = self.fc_out(output)
+    
+    return output
+```
+
+关于**平均池化**: 
+ 
+维度变换与任务区别`(batch_size, seq_len, d_model)`
+
+- `(2, 6, 512).mean(dim=1)`  ⟶  `(2, 512)`  
+  **句子级特征**：只认句子，每个句子有 512 个维度的特征。
+
+- `(2, 6, 512).mean(dim=0)`  ⟶  `(6, 512)`  
+  **单词级特征**：只认单词，每个单词有 512 个维度的特征，不分句子。
+
+- `(2, 6, 512)`  ⟶  **不变**  
+  **句子和单词都考虑**：每个句子里的每个单词有 512 个维度。
+
+
+### Decoder Only
+Decoder-Only是专用于生成式任务的架构, 有独特的训练流程和结构
+
+![alt text](image-3.png)
+
+主要是移除了汇合编码解码信息的注意力层, 注意这里的input embedding一般是脱离要预测的序列之外的一些信息, 用来提供预测的background之类的
+
+Decoder-Only主要采用自回归训练流程(模型通过依赖前面已经生成的部分来逐步生成后续的内容)
+
+在自回归场景中, Decoder-Only的任务是:
+
+*   利用序列的前半段预测序列的后半段
+*   利用teaching force机制和自回归机制的本质, 在训练和预测流程中是用标签来辅助预测
+    *   在**训练**流程中, 用**teaching force**机制, 不断将正确的标签作为特征数据使用, 这个过程不会累积错误
+    *   在**测试**流程中, 用**自回归**属性, 将前一步的预测值作为特征数据来使用, 这个过程可能累积错误
+  
+  在生成式任务中, 一般不再区分“特征和标签”这两种不同的数据, 有且只有一种数据, 就是需要继续生成、继续补充的那段序列
+
+  生成式任务带有**自监督属性**, 训练用的数据和要预测的数据来自同一段序列, 因此标签数据在下一个时间步就会成为我们的特征数据, 所以也不会再去区分特征和标签, 而是区分**输入和输出**
+
+TransformerDncoderLayer和TransformerEncoderLayer的参数完全一致
+
+需要注意的是:
+*   encoder需要输入的是
+    *   **inputs**
+    *   **填充掩码**
+*   decoder需要输入的是
+    *   **outputs**(前一步生成内容)
+    *   **memory**(来自encoder的信息)
+    *   **target**(直接输入给decoder的信息, 仅在训练时使用)
+    *   **填充掩码**(用于target, 一般不需要用于memory, 因为对于生成的memory信息无需再进行填充, 使用注意力机制会自动对齐)
+    *   **前瞻掩码**(一般用于target, 很少用于memory)
+
