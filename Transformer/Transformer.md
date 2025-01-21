@@ -291,3 +291,70 @@ TransformerDncoderLayer和TransformerEncoderLayer的参数完全一致
     *   **填充掩码**(用于target, 一般不需要用于memory, 因为对于生成的memory信息无需再进行填充, 使用注意力机制会自动对齐)
     *   **前瞻掩码**(一般用于target, 很少用于memory)
 
+### 实战注意点
+在数据进入pytorch之前, 必须满足与pytorch兼容的格式要求:
+1.   确保数据集拥有__len__方法和__getitem__方法
+2.   数据应该是torch.Tensor类型
+  
+```python
+# 兼容PyTorch，我们使用继承自Dataset的类
+class TransformerDataset(Dataset):
+    def __init__(self, data):
+        # 初始化数据集，将传入的数据保存在实例变量data中
+        self.data = data
+
+    def __len__(self):
+        # 返回数据集的大小
+        return len(self.data)
+
+    def __getitem__(self, i):
+        # 根据索引i获取数据集中的第i个样本
+        return self.data[i]
+```
+
+然后使用DataLoader对数据完成进一步的处理:
+1.   完成batch的分割
+2.   完成padding, 裁剪, 张量转化(list->tensor)等
+3.   处理好标签y_true. 即使自监督学习不需要标签, 但在**计算损失函数的时候仍然需要标签**
+     *   假设seq = [2, 5, 7, 8, 11], 那么对应的**y_true = [seq[1], seq[2], seq[3], seq[4], 0]** = [5, 7, 8, 11, 0] (填充0是因为在词汇表里**把0设置为unknown**; 如果0设置的不是unknown而是某个具体的词, 那么就需要填充别的数字)
+
+
+```python
+# 定义 collate_fn 函数，用于在 DataLoader 中对一个 batch 的数据进行处理
+def collate_fn(examples):
+    # 将每个样本的输入部分转换为张量
+    seq = [torch.tensor(ex) for ex in examples]
+    y_true = [torch.tensor(ex[1:] + [0]) for ex in examples]
+
+    # pytorch 自带的 padding 工具
+    # 对 batch 内的样本进行 padding，使其具有相同长度
+    seq = pad_sequence(seq, batch_first=True)
+    y_true = pad_sequence(y_true, batch_first=True)
+
+    # 返回处理后的输入和目标
+    return seq, y_true
+```
+ 举例:
+
+**seq = 这是最好的时代, 也是最坏的时代**
+
+ 经过带前瞻掩码的多头注意力机制后:
+
+ **seq = [这, 这是, 这是最好的, 这是最好的时代, ...]**
+
+所以: 
+
+ **y_true = [是, 最好的, 时代, ...]**
+
+## Hugging Face
+
+| **特性**               | **Transformers (pipeline)**           | **Transformers (直接加载模型)**        | **vLLM**                                |
+|------------------------|----------------------------------------|----------------------------------------|-----------------------------------------|
+| **抽象层次**           | 高层封装，简单易用                     | 低层操作，自定义性强                    | 专注大规模优化，适合高效生产环境         |
+| **内存管理**           | 依赖 Hugging Face 默认实现             | 依赖 Hugging Face 默认实现              | 动态内存分配，优化 GPU 使用              |
+| **吞吐量**             | 中等，适合小批量推理                   | 中等，适合自定义任务                    | 高，支持并行推理，适合大规模任务         |
+| **易用性**             | 操作简便，快速上手                     | 需要手动处理输入、输出和推理逻辑         | 使用略复杂，但高效处理大规模请求          |
+| **适用场景**           | 快速原型开发、测试预训练模型           | 需要自定义逻辑或模型微调                | 高效生产部署、批量任务或低延迟应用       |
+| **自动化支持**         | 自动完成预处理和后处理                 | 用户手动处理预处理和后处理              | 自动优化推理速度和内存占用              |
+| **代码复杂度**         | 低                                     | 中                                      | 略高                                    |
+| **示例场景**           | 小型测试和原型开发                     | 深度定制或微调模型                      | 批量生成、问答系统、大规模推理           |
