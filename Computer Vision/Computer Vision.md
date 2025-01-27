@@ -259,3 +259,125 @@ net(data)
 ![alt text](image-8.png)
 
 *   n x 卷积+池化 = 1block
+
+```python
+import torch
+from torch import nn
+from torch.nn import functional as F
+from torchinfo import summary
+class VGG16(nn.Module):
+    def __init__(self):
+        super().__init__()
+        #block1
+        self.conv1 = nn.Conv2d(3,64,3,padding=1)
+        self.conv2 = nn.Conv2d(64,64,3,padding=1)
+        self.pool1 = nn.MaxPool2d(2)
+        #block2
+        self.conv3 = nn.Conv2d(64,128,3,padding=1)
+        self.conv4 = nn.Conv2d(128,128,3,padding=1)
+        self.pool2 = nn.MaxPool2d(2)
+        #block3
+        self.conv5 = nn.Conv2d(128,256,3,padding=1)
+        self.conv6 = nn.Conv2d(256,256,3,padding=1)
+        self.conv7 = nn.Conv2d(256,256,3,padding=1)
+        self.pool3 = nn.MaxPool2d(2)
+        #block4
+        self.conv8 = nn.Conv2d(256,512,3,padding=1)
+        self.conv9 = nn.Conv2d(512,512,3,padding=1)
+        self.conv10 = nn.Conv2d(512,512,3,padding=1)
+        self.pool4 = nn.MaxPool2d(2)
+        #block5
+        self.conv11 = nn.Conv2d(512,512,3,padding=1)
+        self.conv12 = nn.Conv2d(512,512,3,padding=1)
+
+        self.conv13 = nn.Conv2d(512,512,3,padding=1)
+        self.pool5 = nn.MaxPool2d(2)
+        
+        #FC层
+        self.linear1 = nn.Linear(512*7*7,4096) 
+        self.linear2 = nn.Linear(4096,4096) 
+        self.linear3 = nn.Linear(4096,10)
+
+    def forward(self,x):
+        x = F.relu(self.conv1(x))
+        x = self.pool1(F.relu(self.conv2(x)))
+        x = F.relu(self.conv3(x))
+        x = self.pool2(F.relu(self.conv4(x)))
+        x = F.relu(self.conv5(x))
+        x = F.relu(self.conv6(x))
+        x = self.pool3(F.relu(self.conv7(x)))
+        x = F.relu(self.conv8(x))
+        x = F.relu(self.conv9(x))
+        x = self.pool4(F.relu(self.conv10(x)))
+        x = F.relu(self.conv11(x))
+        x = F.relu(self.conv12(x))
+        x = self.pool5(F.relu(self.conv13(x)))
+
+        x = x.view(-1, 512*7*7)
+
+        x = F.relu(self.linear1(F.dropout(x,p=0.5)))
+        x = F.relu(self.linear2(F.dropout(x,p=0.5)))
+        output = F.softmax(self.linear3(x),dim=1)
+        return output
+
+vgg = VGG16()
+
+summary(vgg, input_size=(10, 3, 224, 224),device="cpu")
+```
+
+## 感受野
+
+**感受野**: 每个神经元节点都对应着**输入图像**上的某个区域, 且该神经元仅受这个区域中的图像内容的影响, 那么这个区域称为神经元的感受野
+
+![alt text](image-9.png)
+
+*   随着深度的加深, 神经元上的感受野会越来越大, 这意味着单个神经元上所携带的原始数据的信息会越来越多
+*   由于卷积神经网络是稀疏交互的, 所以在被输入到FC层之前, 感受野越大越好
+*   较大的感受野意味着较好的模型效果, 但稍微增加一些感受野的尺寸, 并不能对整个模型的效果带来巨大的改变
+
+**感受野的性质:**
+1.   **深度越大, 感受野越大**
+2.   **池化层放大感受野的效率更高**
+     *   递减架构: 在4个卷积层后, 图像尺寸22x22->14x14, 感受野尺寸为9x9![alt text](image-10.png)
+     *   重复架构: 在3个卷积层+1个池化层+1个卷积后, 特征图22x22->11x11, 感受野尺寸为12x12![alt text](image-11.png)
+     *   在两种架构中, 只要卷积核的尺寸保持3x3, **那每经过一个卷积层, 感受野的尺寸实际上只会增加2. 但池化层在将特征图尺寸减半的同时, 却能够将感受野的宽和高都扩大一倍**. 池化层的存在令重复架构放大感受野的效率更高, 这让重复架构更有优势
+3.   **感受野的尺寸没有上限**![alt text](image-12.png)![alt text](image-13.png)
+4.   **关注中心, 周围模糊**
+     *   对于特征图来说, 每个神经元所捕捉到的感受野区域不同, 但这些区域是会有重叠的. 越是位于中间的像素, 被扫描的次数越多, 感受野重叠也就会越多
+     *   因此位于图像中间的像素对最终特征图的影响更大, 对卷积神经网络的分类造成的影响也更大
+     *   所以, 使用远远超出图像尺寸的感受野, 而将图像信息“锁”在感受野中心, 让本来应该“模糊”的部分全都被黑边所替代, 就是最有效的做法. **这就是为什么我们需要越大越好、甚至远超图片尺寸的的感受野**(也就是“带黑边”的感受野)
+5.   **感受野的大小只与卷积核大小、各层步长有关, 与padding无关**
+     *   感受野尺寸 = 上一层的感受野尺寸+(这一层的核尺寸-1)*(从第一层到上一层的步长的累乘之积) 
+
+
+**扩大感受野的方法**:
+1.   增加深度
+2.   使用池化层
+3.   膨胀卷积、残差连接等
+
+
+### 膨胀卷积
+**膨胀操作**: 以计算点为中心
+*   膨胀率 = 1, 计算点就是全部的面积 
+*   膨胀率 = 2, 在计算点周边扩充一圈像素 
+*   膨胀率 = 3, 在像素周围填充2圈像素
+
+**膨胀卷积**: 在每个参与卷积计算的计算点上做膨胀操作, 让计算点与计算点之间出现空洞, 并跳过空洞进行计算. 这样可以在不增加卷积核尺寸的情况下放大感受野
+
+**膨胀率 = 1:**![alt text](image-14.png)
+
+**膨胀率 = 2:**![alt text](image-15.png)
+
+**膨胀率 = 3:**![alt text](image-16.png)
+
+**膨胀卷积会改变输出的特征图的尺寸**, 膨胀率越大, 生成的特征图尺寸越小
+
+**在经过多层卷积层后, 使用膨胀卷积并不会导致信息损失**:
+
+膨胀前: 有较多重复信息(橙色格子为重复扫描)
+![alt text](image-17.png)
+
+膨胀后: 像素之间相互补充
+![alt text](image-18.png)
+
+*但并不是在所有的架构里, 我们都能将膨胀卷积的洞完美补上*
