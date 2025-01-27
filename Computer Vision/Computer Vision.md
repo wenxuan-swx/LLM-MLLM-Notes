@@ -118,3 +118,144 @@ $$W_{out} = \frac{W_{in} - K_W +2*P}{S[1]} +1$$
 **Droupout**指的是在训练过程中, 以概率p随机沉默一部分神经元, 以此减少过拟合可能性. 在卷积中, **Droupout不会以神经元为单位, 而是以特征图为单位进行沉默**, 所以不要使用太大的p,否则容易陷入欠拟合.
 
 这两个层在训练和测试的时候起作用的方式不太一样, 使用时一定要区分训练和测试的情况
+
+# LeNet5
+![alt text](image-6.png)
+
+*   共6个层: 2个卷积层+2个平均池化层+2个全连接层
+*   每个卷积层和全连接层后都适用激活函数tanh或sigmoid
+*   **输入->(卷积+池化)->(卷积+池化)->(线性x2)->输出**
+
+```python
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+data = torch.ones(size=(10,1,32,32))  #(sample_num, 通道, 高, 宽)
+
+class Model(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(1,6,5)
+        self.pool1 = nn.AvgPool2d(kernel_size=2,stride=2)
+        self.conv2 = nn.Conv2d(6,16,5)
+        self.pool2 = nn.AvgPool2d(kernel_size=2,stride=2)
+        self.fc1 = nn.Linear(16*5*5,120) #这里的上层输入是图像中的全部像素 self.fc2 = nn.Linear(120,84)
+
+    def forward(self,x):
+        x = F.tanh(self.conv1(x))
+        x = self.pool1(x)
+        x = F.tanh(self.conv2(x))
+        x = self.pool2(x)
+        x = x.view(-1,16*5*5) #需要将数据的特征部分“拉平”才能够进入FC层 
+        x = F.tanh(self.fc1(x))
+        output = F.softmax(self.fc2(x),dim=1)  #(sample, feature)
+
+net = Model()
+
+net(data)
+
+
+#卷积网络的一大特点是:改变输入数据的尺寸，整个网络就会开始花式报错 
+#你可以试试将数据32*32的结构修改至28*28
+#安装torchinfo库，查看网络结构 
+
+!pip install torchinfo
+from torchinfo import summary
+net = Model()
+summary(net, input_size=(10, 1, 32, 32))
+```
+
+# AlexNet
+![alt text](image-7.png)
+
+*   共11层: 5个卷积层, 3个池化层, 1个隐藏全连接层, 1个全连接输出层
+*   在全连接层的前后使用了Dropout层(图中未表示)
+*   **输入->(卷积+池化)->(卷积+池化)->(卷积x3+池化)->(线性x3)->输出**
+
+与LeNet5相比, AlexNet的主要改进有:
+1.   **卷积核更小, 网络更深, 通道数更多**
+     *   小卷积核一定要搭配大通道来使用, 才能尽可能多地提取信息
+     *   小卷积核会使得特征图尺寸下降更慢, 从而允许更深的网络. 图像天生就适合用更深的网络来提取信息
+2.   使用ReLU激活函数
+
+| 激活函数  | 输出范围   | 具体函数                                | 是否有梯度消失问题       | 是否以 0 为中心 | 计算效率 | 常见用途                                     |
+|-----------|------------|-----------------------------------------|--------------------------|----------------|----------|---------------------------------------------|
+| **ReLU**  | \[0, +∞\]  | $f(x) = \max(0, x)$                  | 无（但有死神经元问题）   | 否             | 高       | 深度神经网络的默认激活函数                    |
+| **Sigmoid** | \[0, 1\]   | $f(x) = \frac{1}{1 + e^{-x}}$        | 有                       | 否             | 低       | 二分类问题，早期神经网络                     |
+| **Tanh**  | \[-1, 1\]  | $f(x) = \tanh(x) = \frac{e^x - e^{-x}}{e^x + e^{-x}}$ | 有 | 是 | 中 | 需要平滑过渡且对负值敏感的场景 |
+3.   使用Dropout层用来控制过拟合
+4.   引入各种图像增强技术来扩大数据集, 进一步控制过拟合
+5.   使用GPU来进行训练
+   
+```python
+
+import torch
+from torch import nn
+from torch.nn import functional as F
+data = torch.ones(size=(10,3,227,227)) #假设图像的尺寸为227x227
+class Model(nn.Module):
+    def __init__(self):
+        super().__init__()
+        #大卷积核、较大的步长, 快速降低图片尺寸; 较多的通道弥补降低图片尺寸的信息损失
+        self.conv1 = nn.Conv2d(1,96,kernel_size=11, stride=4) 
+        self.pool1 = nn.MaxPool2d(kernel_size=3,stride=2)
+
+        #卷积核、步长恢复正常大小，进一步扩大通道
+        self.conv2 = nn.Conv2d(96,256,kernel_size=5, padding=2)    #增加padding, 不让图片尺寸缩小
+        self.pool2 = nn.MaxPool2d(kernel_size=3,stride=2)
+
+        #连续的卷积层，疯狂提取特征
+        self.conv3 = nn.Conv2d(256,384,kernel_size=3,padding=1) 
+        self.conv4 = nn.Conv2d(384,384,kernel_size=3,padding=1) 
+        self.conv5 = nn.Conv2d(384,256,kernel_size=3,padding=1) 
+        self.pool3 = nn.MaxPool2d(kernel_size=3,stride=2)
+
+        #全连接层
+        self.fc1 = nn.Linear(256*6*6,4096) #这里的上层输入是图像中的全部像素 
+        self.fc2 = nn.Linear(4096,4096)
+        self.fc3 = nn.Linear(4096,1000) #输出ImageNet的一千个类别
+
+   def forward(self,x):
+        x = F.relu(self.conv1(x))
+        x = self.pool1(x)
+
+        x = F.relu(self.conv2(x))
+        x = self.pool2(x)
+
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = F.relu(self.conv5(x))
+        x = self.pool3(x)
+
+        x = x.view(-1,256*6*6) #需要将数据的特征部分“拉平”才能够进入FC层
+        x = F.relu(F.dropout(self.fc1(x),0.5)) #dropout:随机让50%的权重为0 
+        x = F.relu(F.dropout(self.fc2(x),0.5))
+        output = F.softmax(self.fc3(x),dim=1)
+
+net = Model()
+net(data)
+```
+
+# 自己搭建卷积神经网络
+模型评估三角: **效果, 效率, 可解释性**
+
+“**小卷积核、多通道、更深层**”被证明是有效的
+
+## 网络的深度
+更深的网络会展现出更强大的学习能力
+
+但可能碰到的问题是:
+1.   输入图像的尺寸会限制深度的选择
+     *   **卷积层和池化层都能快速地降低特征图的尺寸**. 以224x224尺寸为例, 只要池化层和步长为2的卷积层出现5次, 特征图的尺寸就会变成7x7, 不再具备追求更深网络的空间
+     *   我们只能依赖卷积层来控制特征图尺寸缩小的速度. 卷积核越大, 生成的特征图尺寸越小. **因此为了深度, 卷积核最好选择小尺寸. 但对于小卷积核, padding就无法被设置得太大(padding参数要小于核尺寸的一半)**
+     *   为了增加深度, 常见处理思路有:
+         *   **递减架构**: **不使用池化层**, 利用padding核卷积核搭配, 使每经过一次卷积层, 就缩小几个像素
+         *   **重复架构(计算效率更高、鲁棒性更好)**: 利用padding核卷积核搭配, 使**每次经过卷积层的尺寸不变**, 利用池化层来缩小特征图
+
+### VGGNet
+基于重复架构, VGGNet的核心思想是**使用多个连续且保持特征图尺寸不变的卷积层来增加深度**, 以增加算法的学习能力
+
+![alt text](image-8.png)
+
+*   n x 卷积+池化 = 1block
