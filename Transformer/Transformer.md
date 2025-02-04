@@ -145,8 +145,8 @@ $$Attention(Q, K, V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 ![alt text](image-4.png)
 
 简单粗暴地理解:
--   编码层Encoder: 把文字转化成矩阵
--   解码层Decoder: 把矩阵转化成文字
+-   编码层Encoder: 收输入数据、负责提取特征
+-   解码层Decoder: 负责输出最终的标签。当这个标签是自然语言的时候，解码器负责的是“将被处理后的信息还原回自然语言”，当这个标签是特定的类别或标签的时候，解码器负责的就是“整合信息输出统一结果”
 
 **Encoder(可以有n个)**:
 **注意力机制**->残差和(缓解梯度消失、避免性能退化、加速模型收敛)+标准化->**前馈神经网络**->残差和+标准化
@@ -158,6 +158,7 @@ $$Attention(Q, K, V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 *   在Decoder层, 输入的是对标签进行embedding的结果
 *   Decoder和Encoder的层数应该保持一致, 一般是6层
 *   对于1-5层Encoder, 它们只会把编码好结果传递给下一层Encoder, 只有**第6层Encoder会把结果分别传递给6个Decoder**
+*   在Decoder的多头注意力机制中, **来自Output传入的矩阵是Q, 而Encoder传入的两个矩阵是K和V**. 相当于由Output输入的标签进行询问, 而Encoder的内容进行回答
 
 
 **总结对比**
@@ -172,6 +173,103 @@ $$Attention(Q, K, V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 *   GPT 将输入指令和目标输出拼接成一个连续序列, 通过自回归机制生成序列，逐步预测下一个标记，直到生成完整输出. 输入和输出是同一序列，不需要显式的编码器-解码器交互, 因此不是seq2seq类型
 
 ## Pytorch实现Transformer
+### Embedding层
+文字并不能直接转化成高维向量, 而是需要先形成一个词汇表, 每个词汇对应一个第一无二的索引, 而后将索引映射成高维向量(现在huggingface上也可以直接从文字映射成高维向量)
+
+**Embedding的结果是可以训练的**, 并不是一成不变的
+
+
+### 位置编码Positional Encoding
+
+与RNN和LSTM不同, Transformer并不以序列的方式逐步处理输入数据, 而是一次性处理整个序列, **因此Attention和Transformer缺乏顺序/位置信息**
+
+
+![alt text](image-6.png)
+*图上的维度应该都是512*
+
+在Transformer模型中, 词嵌入和位置编码被相加, 然后输入到模型的第一层. 这样, Transformer就可以同时处理词语的语义和它在句子中的位置信息
+
+为什么词嵌入和位置编码直接相加, 但位置编码的信息仍能被正确解析?
+*   可以把位置编码看作是一种轻微的扰动，它对词嵌入施加了一个小的影响，让相同的词在不同位置上的输入有所不同
+*   在计算自注意力分数时, 如果位置不同(位置编码不同), 即使单词相同(词嵌入向量相同), 计算出的Q和K仍然不同, 会导致不同的注意力权重. 这意味着位置信息不会丢失
+
+
+#### 正余弦编码
+
+![alt text](image-7.png)
+具体来看，正余弦编码的公式如下：
+
+- 正弦位置编码（Sinusoidal Positional Encoding）
+$$PE_{(pos, 2i)} = \sin \left( \frac{pos}{10000^{\frac{2i}{d_{\text{model}}}}} \right) $$
+
+- 余弦位置编码（Cosine Positional Encoding）
+$$ PE_{(pos, 2i+1)} = \cos \left( \frac{pos}{10000^{\frac{2i}{d_{\text{model}}}}} \right) $$
+
+
+其中
+- **pos是我们编码的核心信息, 也就是位置信息**, 代表样本在序列中的位置
+- $2i$和$2i+1$分别代表embedding矩阵中的偶数和奇数维度索引,我们对奇数列使用cos函数, 对偶数列使用sin函数
+- $d_{\text{model}}$ 代表embedding后矩阵的总维度(比如512, 我们需要这个值来确保生成的位置编码长度和词嵌入向量的长度一样, 以便可以相加)
+
+
+**正余弦编码的优点:**
+1.   sin和cos值域有限, 可以**限制位置编码的大小**
+2.   具有良好的泛化性, 可以适用于任何长度的序列
+3.   不增加额外的训练参数
+4.   通过**调节频率, 我们可以得到多种多样的sin和cos函数**, 从而可以将位置信息投射到每个维度都各具特色、各不相同的高维空间, 以形成对位置信息的更好的表示(这就是我们为什么不直接把cos(pos)复制512次)
+5.   **特征编号小的特征**(512个特征中靠前的特征), 三角函数的频率较高, **变化越剧烈, 可以捕捉到样本与样本的位置之间本身的细节差异**; **特征编号大的特征**, 三角函数频率低, 变化较为平缓, 反应的是**样本与样本之间按顺序排列的全局趋势**
+     *   如下图所示, 前两个特征正余弦编码后震荡比较剧烈, 完全看不出相邻位置之间有什么联系; 而后两位特征正余弦编码后和位置信息基本是保持同样的规律的
+    ![alt text](image-8.png)
+
+```python
+import torch
+import math
+
+class PositionalEncoding(torch.nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        """
+        d_model: 词嵌入的维度
+        max_len: 句子的最大长度
+        """
+        super(PositionalEncoding, self).__init__()
+
+        # 创建一个形状为 (max_len, d_model) 的位置编码矩阵
+        pe = torch.zeros(max_len, d_model)
+
+        # 生成位置索引 (max_len, 1)，然后扩展到 (max_len, d_model/2)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+
+        # 计算 div_term，控制不同维度的频率
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+
+        # 计算正弦和余弦位置编码
+        pe[:, 0::2] = torch.sin(position * div_term)  # 偶数索引用 sin
+        pe[:, 1::2] = torch.cos(position * div_term)  # 奇数索引用 cos
+
+        # 扩展维度，变为 (1, max_len, d_model)，方便与 batch 维度对齐
+        self.pe = pe.unsqueeze(0)
+
+    def forward(self, x):
+        """
+        x: (batch_size, seq_len, d_model)
+        """
+        seq_len = x.size(1)  # 获取输入的序列长度
+        return x + self.pe[:, :seq_len, :].to(x.device)  # 只取当前 batch 的长度部分，并添加到输入
+
+# 测试代码
+d_model = 16  # 词向量维度
+max_len = 50  # 最大句子长度
+pos_encoder = PositionalEncoding(d_model, max_len)
+
+# 生成一个 (batch_size=2, seq_len=10, d_model=16) 的输入
+x = torch.zeros(2, 10, d_model)
+
+# 添加位置编码
+x_with_pe = pos_encoder(x)
+print(x_with_pe.shape)  # 预期输出: torch.Size([2, 10, 16])
+
+```
+
 ### Encoder Only
 
 Pytorch中没有完整的Transformer架构, 只有用于构建Transformer的各个层. (想完整使用最好用hugging face)
