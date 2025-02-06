@@ -141,6 +141,8 @@ $$Attention(Q, K, V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 
 ### Transformer的自注意力层
 ![alt text](image-5.png)
+
+
 ## Transformer的结构
 ![alt text](image-4.png)
 
@@ -165,14 +167,14 @@ $$Attention(Q, K, V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 
 | **模型结构**         | **特点**                     | **典型应用场景**                   | **代表模型**              |
 |-------------------|--------------------------|------------------------------|------------------------|
-| **Encoder-Only**  | 专注于输入序列的表示           | 文本分类、序列标注、语义嵌入生成       | BERT, RoBERTa          |
-| **Decoder-Only**  | 专注于序列生成（自回归方式）     | 文本生成、语言建模、对话系统           | GPT, GPT-3             |
-| **Encoder+Decoder** | 处理序列到序列的转换任务         | 机器翻译、文本摘要、问答系统、图像描述生成 | Transformer, T5, BART |
+| **Encoder-Only**  | 专注于输入序列的表示           | **情感分析**: 确定文本的情感倾向，如正面、负面或中性<br><br>**文本分类**: 垃圾邮件过滤、新闻分类等<br><br>**文本生成的预训练**      | BERT, RoBERTa          |
+| **Decoder-Only**  | 专注于序列生成（自回归方式）     | **大语言模型**<br>**文本生成**<br>**代码补全**           | GPT, GPT-3             |
+| **Encoder+Decoder** | 处理序列到序列的转换任务         | **机器翻译**<br>**文本摘要**<br>**问答系统**: 根据上下文回答用户的问题，或者给定一段文本，回答其中提到的具体问题<br>**图像描述生成** | Transformer, T5, BART |
 
 
 *   GPT 将输入指令和目标输出拼接成一个连续序列, 通过自回归机制生成序列，逐步预测下一个标记，直到生成完整输出. 输入和输出是同一序列，不需要显式的编码器-解码器交互, 因此不是seq2seq类型
 
-## Pytorch实现Transformer
+## Encoder的各个层
 ### Embedding层
 文字并不能直接转化成高维向量, 而是需要先形成一个词汇表, 每个词汇对应一个第一无二的索引, 而后将索引映射成高维向量(现在huggingface上也可以直接从文字映射成高维向量)
 
@@ -270,21 +272,64 @@ print(x_with_pe.shape)  # 预期输出: torch.Size([2, 10, 16])
 
 ```
 
+### 残差连接
+
+残差连接可以有效地避免梯度消失
+
+### 层归一化Layer Normalization
+
+归一化的作用:
+1.   减少内部协方差偏移
+2.   加快训练速度
+3.   减少对初始值的依赖
+
+
+transformer的输入数据格式: (`batch_size`, `vocal_size`, `input_dimensions`)
+
+**Batch Normalization**是在同一个batch内, 对**不同样本**的各个特征维度进行归一化
+
+**Layer Normalization**是对**同一个样本**的所有特征进行归一化
+
+![alt text](image-9.png)
+
+**为什么使用LN而不使用BN**:
+1.   NLP中经常处理长度不同的句子, 对于长度小于vocal_size的句子来说, 后面的几个词对应的维度都是填充的0, 没有实际意义. 此时若再跨样本进行BN, 这些填充的0将会把平均值和方差带跑
+2.   为了提升训练速度, 可能会把batch_size设置为一个很小的值, 此时BN会因为batch_size不足而受到限制
+3.   在某些任务中, 模型会一个接一个地处理序列中的元素, 而不是整个batch一起处理, 此时BN就不再适用了
+
+
+
+### 前馈网络: 提供非线性变换
+
+前馈神经网络: 信息单向流动的网络
+
+在Transformer当中, 实际上前馈神经网络就是**由线性层组成的深度神经网络结构**, 它的主要职责是对输入数据进行**非线性变换**, 同时也负责产生输出值(这使得Encoder Only可以直接输出预测的标签)
+
+自注意力机制大多数是一个线性结构, **在前馈神经网络之前, transformer不具有非线性结构**
+
+前馈神经网络的具体结构: **两个线性层之间夹有一个激活函数**
+
+1. **第一层线性变换**: 
+   $z_1 = xW_1 + b_1$
+   - $x$ 是输入向量
+   - $W_1$ 和 $b_1$ 是第一层的权重矩阵和偏置向量
+     
+2. **ReLU激活函数**: 
+   $a_1 = \text{ReLU}(z_1) = \max(0, z_1)$
+   - ReLU的作用是引入非线性, 使得网络能够学习更复杂的函数映射
+       
+3. **第二层线性变换**: 
+   $z_2 = a_1W_2 + b_2$
+   - $a_1$ 是经过ReLU激活后的中间表示
+   - $W_2$ 和 $b_2$ 是第二层的权重矩阵和偏置向量
+   - 最终输出 $z_2$ 是前馈神经网络的输出
+
+合起来，前馈神经网络的完整表达式为: 
+$$ FFN(x) = \max(0, xW_1 + b_1)W_2 + b_2 $$
+
 ### Encoder Only
 
-Pytorch中没有完整的Transformer架构, 只有用于构建Transformer的各个层. (想完整使用最好用hugging face)
-
-| **类名称**                        | **作用**                                                     |
-|----------------------------------|------------------------------------------------------------|
-| `nn.Transformer`                 | 不带输入与输出层的 Transformer 模型，同时具备编码器和解码器 |
-| `nn.TransformerEncoder`          | Transformer 编码器的堆叠层，可以控制 Nx 的 N 的具体数字     |
-| `nn.TransformerDecoder`          | Transformer 解码器的堆叠层，可以控制 Nx 的 N 的具体数字     |
-| `nn.TransformerEncoderLayer`     | **Transformer 编码器层，由自注意力和前馈网络组成**  |
-| `nn.TransformerDecoderLayer`     | **Transformer 解码器层，由自注意力、编码器-解码器注意力和前馈网络组成**|
-| `nn.MultiheadAttention`          | 多头注意力机制                                              |
-| `nn.LayerNorm`                   | 层归一化层                                                 |
-| `nn.Embedding`                   | 嵌入层，用于将输入序列转换为嵌入表示                      |
-
+Pytorch中没有完整的Transformer架构, 只有用于构建Transformer的各个层
 
 `nn.TransformerEncoderLayer`的参数:
 
@@ -323,14 +368,7 @@ out = encoder_layer(src)
 | `src_mask`                  | 输入序列的掩码矩阵（**可选**），默认接收形状为 `(seq_len, seq_len)` 的二维矩阵。<br>通常该参数默认是执行**前瞻掩码**，在编码器（Encoder）中很少使用。 |
 | `src_key_padding_mask`      | 输入序列的**填充掩码矩阵**（**可选**），默认接收形状为 `(batch_size, seq_len)` 的二维矩阵。<br>该参数仅用于**填充掩码**。 |
 
-前瞻掩码和填充掩码的区别
 
-| **对比维度**       | **填充掩码（Padding Mask）**                  | **前瞻掩码（Look-Ahead Mask）**                |
-|------------------|--------------------------------------------|--------------------------------------------|
-| **作用**         | 为了统一输入长度，短序列会在末尾或开头填充特殊符号, 因此在计算注意力时需要**屏蔽输入中的填充位**                              | 屏蔽未来的信息，防止模型“偷看”未来的内容         |
-| **应用场景**     | 编码器和解码器（Encoder & Decoder）             | 主要用于解码器（Decoder）                    |
-| **掩码矩阵形状** | `(batch_size, seq_len)`                      | `(seq_len, seq_len)`                      |
-| **示例掩码**     | `[0, 0, 1, 1, 1]`（填充位为 1）               | 上三角矩阵（对角线以上为 -∞，对角线以下为 0）   |
 
 
 ```python
@@ -377,18 +415,467 @@ def forward(self, src, src_mask=None, src_key_padding_mask=None):
     return output
 ```
 
-关于**平均池化**: 
- 
-维度变换与任务区别`(batch_size, seq_len, d_model)`
 
-- `(2, 6, 512).mean(dim=1)`  ⟶  `(2, 512)`  
-  **句子级特征**：只认句子，每个句子有 512 个维度的特征。
+## Decoder的各个层
 
-- `(2, 6, 512).mean(dim=0)`  ⟶  `(6, 512)`  
-  **单词级特征**：只认单词，每个单词有 512 个维度的特征，不分句子。
+### 输入与Teacher Forcing
 
-- `(2, 6, 512)`  ⟶  **不变**  
-  **句子和单词都考虑**：每个句子里的每个单词有 512 个维度。
+ Decoder的输入是**滞后1个单位的标签矩阵**, 也就是: 
+
+[y1, y2, y3, y4]->[NaN, y1, y2, y3, y4]
+
+这样做是为了在开头插入序列起始标记(sos)->["sos", y1, y2, y3, y4]
+
+对decoder输入来说, 序列起始标记sos是必须的, 序列结束标记eos不是必须的
+
+在Seq2Seq任务的训练过程中, 由于Decoder结构会需要输入标签, 因此我们必须要准备三种不同的数据(1个特征2个标签: `X`->Encoder, `y`->Decoder, `y`->loss), 并进行如下的处理: 
+
+1. **Encoder编码器输入**：`X`不需要添加起始标记和结束标记。
+2. **Decoder解码器输入的标签**：`y`在目标序列前添加起始标记（SOS）。
+3. **解码器用来计算损失函数loss的标签**：`y`在目标序列末尾添加结束标记（EOS）。
+
+处理后的序列就是：
+
+1.    **编码器输入**：`["这", "是", "最", "好", "的", "时", "代"]`
+2.    **解码器输入的标签**：`["SOS", "it", "was", "the", "best", "of", "times"]`
+3.    **解码器用来计算损失函数的标签**：`["it", "was", "the", "best", "of", "times", "EOS"]`
+
+**Teacher Forcing**的本质: 在**训练**时, 利用序列A + 序列B的(**正确的**)前半段预测序列B的后半段, 这样避免了错误的累积
+
+在**测试**和**推理**的过程中, 我们并没有真实的标签矩阵, 因此需要将上一个时间步**预测的结果(不一定正确)**作为Decoder需要的输入
+
+**训练**流程如下(实际训练过程中第一步和第二步(以及其他n步)是**同时并行**的, 因此可以实现**一次性输出**所有预测词):
+
+> - **第一步，输入ebd_X & ebd_y[0] >> 输出yhat[0]，对应真实标签y[0]**
+<table>
+  <tr>
+    <td>
+      <p>输入Encoder<br>特征矩阵</p>
+      <table style="color:red;">
+        <tr>
+          <th>索引</th><th></th><th>y1</th><th>y2</th><th>y3</th><th>y4</th><th>y5</th>
+        </tr>
+        <tr>
+          <td>0</td><td>这</td><td>0.1821</td><td>0.4000</td><td>0.2248</td><td>0.4440</td><td>0.7771</td>
+        </tr>
+        <tr>
+          <td>1</td><td>是</td><td>0.1721</td><td>0.5030</td><td>0.8948</td><td>0.2385</td><td>0.0987</td>
+        </tr>
+        <tr>
+          <td>2</td><td>最好的</td><td>0.1342</td><td>0.8297</td><td>0.2978</td><td>0.7120</td><td>0.2565</td>
+        </tr>
+        <tr>
+          <td>3</td><td>时代</td><td>0.1248</td><td>0.5003</td><td>0.7559</td><td>0.4804</td><td>0.2593</td>
+        </tr>
+      </table>
+    </td>
+    <td>
+      <p>输入Decoder<br>标签矩阵</p>
+      <table>
+        <tr>
+          <th>索引</th><th></th><th>y1</th><th>y2</th><th>y3</th><th>y4</th><th>y5</th>
+        </tr>
+        <tr style="color:red;">
+          <td>0</td><td>"sos"</td><td>0.5651</td><td>0.2220</td><td>0.5112</td><td>0.8543</td><td>0.1239</td>
+        </tr>
+        <tr>
+          <td>1</td><td>It</td><td>0.5621</td><td>0.8920</td><td>0.7312</td><td>0.2543</td><td>0.1289</td>
+        </tr>
+        <tr>
+          <td>2</td><td>was</td><td>0.2314</td><td>0.6794</td><td>0.9823</td><td>0.8452</td><td>0.3417</td>
+        </tr>
+        <tr>
+          <td>3</td><td>the</td><td>0.4932</td><td>0.2045</td><td>0.7531</td><td>0.6582</td><td>0.9731</td>
+        </tr>
+        <tr>
+          <td>4</td><td>best</td><td>0.8342</td><td>0.2987</td><td>0.7642</td><td>0.2154</td><td>0.9812</td>
+        </tr>
+        <tr>
+          <td>5</td><td>of</td><td>0.3417</td><td>0.5792</td><td>0.4821</td><td>0.6721</td><td>0.1234</td>
+        </tr>
+        <tr>
+          <td>6</td><td>times</td><td>0.2531</td><td>0.7345</td><td>0.9812</td><td>0.5487</td><td>0.2378</td>
+        </tr>
+      </table>
+    </td>
+    <td>
+      <p>对应</p>
+      ➡
+    </td>
+    <td>
+      <p>真实标签y</p>
+      <table>
+        <tr>
+          <th>索引</th><th></th>
+        </tr>
+        <tr style="color:blue;">
+          <td>0</td><td>It</td>
+        </tr>
+        <tr>
+          <td>1</td><td>was</td>
+        </tr>
+        <tr>
+          <td>2</td><td>the</td>
+        </tr>
+        <tr>
+          <td>3</td><td>best</td>
+        </tr>
+        <tr>
+          <td>4</td><td>of</td>
+        </tr>
+        <tr>
+          <td>5</td><td>times</td>
+        </tr>
+        <tr>
+          <td>6</td><td>"eos"</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+> - **第二步，输入ebd_X & ebd_y[:1] >> 输出yhat[1]，对应真实标签y[1]**
+
+<table>
+  <tr>
+    <td>
+      <p>输入Encoder<br>特征矩阵</p>
+      <table style="color:red;">
+        <tr>
+          <th>索引</th><th></th><th>y1</th><th>y2</th><th>y3</th><th>y4</th><th>y5</th>
+        </tr>
+        <tr>
+          <td>0</td><td>这</td><td>0.1821</td><td>0.4000</td><td>0.2248</td><td>0.4440</td><td>0.7771</td>
+        </tr>
+        <tr>
+          <td>1</td><td>是</td><td>0.1721</td><td>0.5030</td><td>0.8948</td><td>0.2385</td><td>0.0987</td>
+        </tr>
+        <tr>
+          <td>2</td><td>最好的</td><td>0.1342</td><td>0.8297</td><td>0.2978</td><td>0.7120</td><td>0.2565</td>
+        </tr>
+        <tr>
+          <td>3</td><td>时代</td><td>0.1248</td><td>0.5003</td><td>0.7559</td><td>0.4804</td><td>0.2593</td>
+      </table>
+    </td>
+    <td>
+      <p>输入Decoder<br>标签矩阵</p>
+      <table>
+        <tr>
+          <th>索引</th><th></th><th>y1</th><th>y2</th><th>y3</th><th>y4</th><th>y5</th>
+        </tr>
+        <tr style="color:red;">
+          <td>0</td><td>"sos"</td><td>0.5651</td><td>0.2220</td><td>0.5112</td><td>0.8543</td><td>0.1239</td>
+        </tr>
+        <tr style="color:red;">
+          <td>1</td><td>It</td><td>0.5621</td><td>0.8920</td><td>0.7312</td><td>0.2543</td><td>0.1289</td>
+        </tr>
+        <tr>
+          <td>2</td><td>was</td><td>0.2314</td><td>0.6794</td><td>0.9823</td><td>0.8452</td><td>0.3417</td>
+        </tr>
+        <tr>
+          <td>3</td><td>the</td><td>0.4932</td><td>0.2045</td><td>0.7531</td><td>0.6582</td><td>0.9731</td>
+        </tr>
+        <tr>
+          <td>4</td><td>best</td><td>0.8342</td><td>0.2987</td><td>0.7642</td><td>0.2154</td><td>0.9812</td>
+        </tr>
+        <tr>
+          <td>5</td><td>of</td><td>0.3417</td><td>0.5792</td><td>0.4821</td><td>0.6721</td><td>0.1234</td>
+        </tr>
+        <tr>
+          <td>6</td><td>times</td><td>0.2531</td><td>0.7345</td><td>0.9812</td><td>0.5487</td><td>0.2378</td>
+        </tr>
+      </table>
+    </td>
+    <td>
+        <p>对应</p>
+      ➡
+    </td>
+    <td>
+      <p>真实标签y</p>
+      <table>
+        <tr>
+          <th>索引</th><th></th>
+        </tr>
+        <tr>
+          <td>0</td><td>It</td>
+        </tr>
+        <tr style="color:blue;">
+          <td>1</td><td>was</td>
+        </tr>
+        <tr>
+          <td>2</td><td>the</td>
+        </tr>
+        <tr>
+          <td>3</td><td>best</td>
+        </tr>
+        <tr>
+          <td>4</td><td>of</td>
+        </tr>
+        <tr>
+          <td>5</td><td>times</td>
+        </tr>
+        <tr>
+          <td>6</td><td>"eos"</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+### 掩码注意力机制
+
+
+transformer的掩码机制不让模型看到未来的信息, 是通过**将未来位置的注意力分数设置为0**来实现的
+
+
+基本的注意力公式如下：
+
+$$Attention(Q,K,V) = softmax(\frac{QK^{T}}{\sqrt{d_k}})V$$
+
+在这个公式的基础上引入掩码功能，则涉及到下面的改变：
+
+1. 在计算 $QK^T$ 的点积后，但在应用softmax函数之前，**掩码自注意力机制通过加上一个掩码矩阵来修改这个点积结果**。这个掩码矩阵有特定的结构: 对于不应该被当前位置注意的所有位置(即未来的位置), 掩码会赋予一个非常大的负值(如负无穷).掩码矩阵与原始$QK^T$点积进行**加和**(不是相乘!)，然后再将加和结果放入softmax函数
+2. 应用softmax函数：**当softmax函数应用于经过掩码处理的点积矩阵时，那些被掩码覆盖的位置（即未来的位置）的权重实际上会接近于零**。这是因为 e 的非常大的负数次幂几乎为零
+
+
+具体矩阵表示如下:
+- **没有掩码时的$QK^T$点积**（此时的Q、K都是从输出矩阵中生成的）<br><br>
+$$
+QK^T = \begin{bmatrix}
+       q_1 \cdot k_1^T & q_1 \cdot k_2^T & \cdots & q_1 \cdot k_n^T \\
+       q_2 \cdot k_1^T & q_2 \cdot k_2^T & \cdots & q_2 \cdot k_n^T \\
+       \vdots & \vdots & \ddots & \vdots \\
+       q_n \cdot k_1^T & q_n \cdot k_2^T & \cdots & q_n \cdot k_n^T
+     \end{bmatrix}
+$$
+
+- **没有掩码时softmax函数结果**<br><br>
+$$
+softmax(QK^T) = \begin{bmatrix}
+       \frac{e^{q_1 \cdot k_1^T}}{\sum_{j=1}^n e^{q_1 \cdot k_j^T}} & \frac{e^{q_1 \cdot k_2^T}}{\sum_{j=1}^n e^{q_1 \cdot k_j^T}} & \cdots & \frac{e^{q_1 \cdot k_n^T}}{\sum_{j=1}^n e^{q_1 \cdot k_j^T}} \\
+       \frac{e^{q_2 \cdot k_1^T}}{\sum_{j=1}^n e^{q_2 \cdot k_j^T}} & \frac{e^{q_2 \cdot k_2^T}}{\sum_{j=1}^n e^{q_2 \cdot k_j^T}} & \cdots & \frac{e^{q_2 \cdot k_n^T}}{\sum_{j=1}^n e^{q_2 \cdot k_j^T}} \\
+       \vdots & \vdots & \ddots & \vdots \\
+       \frac{e^{q_n \cdot k_1^T}}{\sum_{j=1}^n e^{q_n \cdot k_j^T}} & \frac{e^{q_n \cdot k_2^T}}{\sum_{j=1}^n e^{q_n \cdot k_j^T}} & \cdots & \frac{e^{q_n \cdot k_n^T}}{\sum_{j=1}^n e^{q_n \cdot k_j^T}}
+     \end{bmatrix}
+$$
+
+- **掩码矩阵**<br><br>
+$$
+M = \begin{bmatrix}
+       0 & -\infty & -\infty & \cdots & -\infty \\
+       0 & 0 & -\infty & \cdots & -\infty \\
+       0 & 0 & 0 & \cdots & -\infty \\
+       \vdots & \vdots & \vdots & \ddots & \vdots \\
+       0 & 0 & 0 & \cdots & 0
+     \end{bmatrix}
+  $$
+
+在进行掩码时，用掩码矩阵与原始$QK^T$点积进行**加和**(不是相乘!)，然后再将加和结果放入softmax函数。
+
+- **有掩码时, 掩码矩阵对原始$QK^T$矩阵的影响**
+
+$$
+QK^T + M = \begin{bmatrix}
+       q_1 \cdot k_1^T + 0 & q_1 \cdot k_2^T - \infty & \cdots & q_1 \cdot k_n^T - \infty \\
+       q_2 \cdot k_1^T + 0 & q_2 \cdot k_2^T + 0 & \cdots & q_2 \cdot k_n^T - \infty \\
+       \vdots & \vdots & \ddots & \vdots \\
+       q_n \cdot k_1^T + 0 & q_n \cdot k_2^T + 0 & \cdots & q_n \cdot k_n^T + 0 \end{bmatrix}
+$$
+
+$$= \begin{bmatrix}
+       q_1 \cdot k_1^T & -\infty & -\infty & \cdots & -\infty \\
+       q_2 \cdot k_1^T & q_2 \cdot k_2^T & -\infty & \cdots & -\infty \\
+       \vdots & \vdots & \ddots & \vdots & -\infty \\
+       q_n \cdot k_1^T & q_n \cdot k_2^T & \cdots & q_n \cdot k_{n-1}^T & q_n \cdot k_n^T
+\end{bmatrix}
+$$
+
+- **有掩码时, 应用softmax函数后**
+
+$$
+\text{softmax}(QK^T + M) = \begin{bmatrix}
+       \frac{e^{q_1 \cdot k_1^T}}{e^{q_1 \cdot k_1^T}} & 0 & 0 & 0 \\
+       \frac{e^{q_2 \cdot k_1^T}}{e^{q_2 \cdot k_1^T} + e^{q_2 \cdot k_2^T}} & \frac{e^{q_2 \cdot k_2^T}}{e^{q_2 \cdot k_1^T} + e^{q_2 \cdot k_2^T}} & 0 & 0 \\
+       \frac{e^{q_3 \cdot k_1^T}}{e^{q_3 \cdot k_1^T} + e^{q_3 \cdot k_2^T} + e^{q_3 \cdot k_3^T}} & \frac{e^{q_3 \cdot k_2^T}}{e^{q_3 \cdot k_1^T} + e^{q_3 \cdot k_2^T} + e^{q_3 \cdot k_3^T}} & \frac{e^{q_3 \cdot k_3^T}}{e^{q_3 \cdot k_1^T} + e^{q_3 \cdot k_2^T} + e^{q_3 \cdot k_3^T}} & 0 \\
+       \frac{e^{q_4 \cdot k_1^T}}{\sum_{j=1}^{4} e^{q_4 \cdot k_j^T}} & \frac{e^{q_4 \cdot k_2^T}}{\sum_{j=1}^{4} e^{q_4 \cdot k_j^T}} & \frac{e^{q_4 \cdot k_3^T}}{\sum_{j=1}^{4} e^{q_4 \cdot k_j^T}} & \frac{e^{q_4 \cdot k_4^T}}{\sum_{j=1}^{4} e^{q_4 \cdot k_j^T}}
+     \end{bmatrix}
+$$
+
+
+
+- **Decoder中，多头注意力机制输出的softmax结果**（这部分信息来自于真实标签y）
+
+$$
+\text{softmax}(QK^T + M) = \begin{bmatrix}
+a_{11} & 0 & 0 & 0 \\
+a_{21} & a_{22} & 0 & 0 \\
+a_{31} & a_{32} & a_{33} & 0 \\
+a_{41} & a_{42} & a_{43} & a_{44}
+\end{bmatrix}
+$$
+
+$$
+V = \begin{bmatrix}
+v_{1}^1 & v_{1}^2 & \ldots & v_{1}^d \\
+v_{2}^1 & v_{2}^2 & \ldots & v_{2}^d \\
+v_{3}^1 & v_{3}^2 & \ldots & v_{3}^d \\
+v_{4}^1 & v_{4}^2 & \ldots & v_{4}^d
+\end{bmatrix}
+$$
+
+$$
+C = \begin{bmatrix}
+a_{11} & 0 & 0 & 0 \\
+a_{21} & a_{22} & 0 & 0 \\
+a_{31} & a_{32} & a_{33} & 0 \\
+a_{41} & a_{42} & a_{43} & a_{44}
+\end{bmatrix}
+\begin{bmatrix}
+v_{1}^1 & v_{1}^2 & \ldots & v_{1}^d \\
+v_{2}^1 & v_{2}^2 & \ldots & v_{2}^d \\
+v_{3}^1 & v_{3}^2 & \ldots & v_{3}^d \\
+v_{4}^1 & v_{4}^2 & \ldots & v_{4}^d
+\end{bmatrix}
+$$
+
+$$
+C = \begin{bmatrix}
+a_{11}v_{1}^1 & a_{11}v_{1}^2 & \ldots & a_{11}v_{1}^d \\
+a_{21}v_{1}^1 + a_{22}v_{2}^1 & a_{21}v_{1}^2 + a_{22}v_{2}^2 & \ldots & a_{21}v_{1}^d + a_{22}v_{2}^d \\
+a_{31}v_{1}^1 + a_{32}v_{2}^1 + a_{33}v_{3}^1 & a_{31}v_{1}^2 + a_{32}v_{2}^2 + a_{33}v_{3}^2 & \ldots & a_{31}v_{1}^d + a_{32}v_{2}^d + a_{33}v_{3}^d \\
+a_{41}v_{1}^1 + a_{42}v_{2}^1 + a_{43}v_{3}^1 + a_{44}v_{4}^1 & a_{41}v_{1}^2 + a_{42}v_{2}^2 + a_{43}v_{3}^2 + a_{44}v_{4}^2 & \ldots & a_{41}v_{1}^d + a_{42}v_{2}^d + a_{43}v_{2}^d + a_{44}v_{4}^d
+\end{bmatrix}
+$$
+
+
+
+### 前瞻掩码和填充掩码
+
+前瞻掩码不是对QK的点积进行操作, 而是**对标签y进行操作**, 即逐步屏蔽输入标签的个数
+
+
+
+前瞻掩码和填充掩码的区别
+
+| **对比维度**       | **填充掩码（Padding Mask）**                  | **前瞻掩码（Look-Ahead Mask）**                |
+|------------------|--------------------------------------------|--------------------------------------------|
+| **作用**         | 为了统一输入长度，短序列会在末尾或开头填充特殊符号, 因此在计算注意力时需要**屏蔽输入中的填充位**                              | 屏蔽未来的信息，防止模型“偷看”未来的内容         |
+| **应用场景**     | 编码器和解码器（Encoder & Decoder）             | 主要用于解码器（Decoder）                    |
+| **掩码矩阵形状** | `(batch_size, seq_len)`                      | `(seq_len, seq_len)`                      |
+| **示例掩码**     | `[0, 0, 1, 1, 1]`（填充位为 1）               | 上三角矩阵（对角线以上为 -∞，对角线以下为 0）   |
+
+
+### 编码器 - 解码器注意力层(交叉注意力层)
+
+从**Decoder带掩码的多头注意力层**输出的结果为(为了简化表示, 仅使用覆盖的时间点来作为脚标): 
+
+$$
+C_{decoder} = \begin{bmatrix}
+c_{1} & c_{1} & \ldots & c_{1} \\
+c_{1 \to 2} & c_{1 \to 2} & \ldots & c_{1 \to 2} \\
+c_{1 \to 3} & c_{1 \to 3} & \ldots & c_{1 \to 3} \\
+c_{1 \to 4} & c_{1 \to 4} & \ldots & c_{1 \to 4}
+\end{bmatrix}
+$$
+
+从**Encoder**中输出的是没有掩码的注意力机制结果$C_{encoder}$，由于没有掩码，所以Encoder中的注意力分数为——
+
+$$
+\text{A} = \begin{bmatrix}
+a_{11} & a_{12} & a_{13} & a_{14} \\
+a_{21} & a_{22} & a_{23} & a_{24} \\
+a_{31} & a_{32} & a_{33} & a_{34} \\
+a_{41} & a_{42} & a_{43} & a_{44}
+\end{bmatrix}
+$$
+
+同时, Encoder输出的V矩阵为
+
+$$
+V = \begin{bmatrix}
+v_{1} & v_{1} & \ldots & v_{1} \\
+v_{2} & v_{2} & \ldots & v_{2} \\
+v_{3} & v_{3} & \ldots & v_{3} \\
+v_{4} & v_{4} & \ldots & v_{4}
+\end{bmatrix}
+$$
+
+$$
+C_{encoder}  = \text{A} \times V= \begin{bmatrix}
+c_{1 \to 4} & c_{1 \to 4} & \ldots & c_{1 \to 4} \\
+c_{1 \to 4} & c_{1 \to 4} & \ldots & c_{1 \to 4} \\
+c_{1 \to 4} & c_{1 \to 4} & \ldots & c_{1 \to 4} \\
+c_{1 \to 4} & c_{1 \to 4} & \ldots & c_{1 \to 4}
+\end{bmatrix}
+$$
+
+在交叉注意力层, 有$C_{decoder}$->$Q$, $C_{encoder}$->$K$&$V$, **使用每行Q与K、V的所有列相乘**，来执行一种特殊的注意力机制, 即
+
+
+$$\text{Context}_1 = \sum_{i} \text{Attention}(Q_1, K_i) \times V_i$$
+
+$$\text{Context}_2 = \sum_{i} \text{Attention}(Q_2, K_i) \times V_i$$
+
+$$\text{Context}_3 = \sum_{i} \text{Attention}(Q_3, K_i) \times V_i$$
+
+$$……$$
+
+即:
+$$
+Context_1 = \begin{bmatrix}
+\color{red}{c_{1}} & \color{red}{c_{1}} & \ldots & \color{red}{c_{1}} \\
+c_{1 \to 2} & c_{1 \to 2} & \ldots & c_{1 \to 2} \\
+c_{1 \to 3} & c_{1 \to 3} & \ldots & c_{1 \to 3} \\
+c_{1 \to 4} & c_{1 \to 4} & \ldots & c_{1 \to 4}
+\end{bmatrix} \cdot 
+\begin{bmatrix}
+\color{red}{c_{1 \to 4}} & c_{1 \to 4} & \ldots & c_{1 \to 4} \\
+\color{red}{c_{1 \to 4}} & c_{1 \to 4} & \ldots & c_{1 \to 4} \\
+\color{red}{c_{1 \to 4}} & c_{1 \to 4} & \ldots & c_{1 \to 4} \\
+\color{red}{c_{1 \to 4}} & c_{1 \to 4} & \ldots & c_{1 \to 4}
+\end{bmatrix}
+$$
+
+$$ + $$
+
+$$
+\begin{bmatrix}
+\color{red}{c_{1}} & \color{red}{c_{1}} & \ldots & \color{red}{c_{1}} \\
+c_{1 \to 2} & c_{1 \to 2} & \ldots & c_{1 \to 2} \\
+c_{1 \to 3} & c_{1 \to 3} & \ldots & c_{1 \to 3} \\
+c_{1 \to 4} & c_{1 \to 4} & \ldots & c_{1 \to 4}
+\end{bmatrix} \cdot
+\begin{bmatrix}
+c_{1 \to 4} & \color{red}{c_{1 \to 4}} & \ldots & c_{1 \to 4} \\
+c_{1 \to 4} & \color{red}{c_{1 \to 4}} & \ldots & c_{1 \to 4} \\
+c_{1 \to 4} & \color{red}{c_{1 \to 4}} & \ldots & c_{1 \to 4} \\
+c_{1 \to 4} & \color{red}{c_{1 \to 4}} & \ldots & c_{1 \to 4}
+\end{bmatrix}
+$$
+
+$$ + $$
+
+$$ …… $$
+
+$$ + $$
+
+$$
+\begin{bmatrix}
+\color{red}{c_{1}} & \color{red}{c_{1}} & \ldots & \color{red}{c_{1}} \\
+c_{1 \to 2} & c_{1 \to 2} & \ldots & c_{1 \to 2} \\
+c_{1 \to 3} & c_{1 \to 3} & \ldots & c_{1 \to 3} \\
+c_{1 \to 4} & c_{1 \to 4} & \ldots & c_{1 \to 4}
+\end{bmatrix} \cdot
+\begin{bmatrix}
+c_{1 \to 4} & c_{1 \to 4} & \ldots & \color{red}{c_{1 \to 4}} \\
+c_{1 \to 4} & c_{1 \to 4} & \ldots & \color{red}{c_{1 \to 4}} \\
+c_{1 \to 4} & c_{1 \to 4} & \ldots & \color{red}{c_{1 \to 4}} \\
+c_{1 \to 4} & c_{1 \to 4} & \ldots & \color{red}{c_{1 \to 4}}
+\end{bmatrix}
+$$
+
+这个流程正是为了实现利用序列X(矩阵KV的每一列) + 序列y的前半段预测序列y的后半段的**并行**计算
+
 
 
 ### Decoder Only
