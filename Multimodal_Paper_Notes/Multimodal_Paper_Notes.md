@@ -70,3 +70,225 @@ APC 的核心思想是**基于模型在原始视觉输入 $V$ 下的置信度，
      $$
    - 这样做可以**保证模型不会因为 VCD 误惩罚而生成不可信的 token**。
 
+
+
+
+# OPERA: Alleviating Hallucination in Multi-Modal Large Language Models via Over-Trust Penalty and Retrospection-Allocation
+
+## 幻觉的产生
+
+大多数 MLLMs 具有一种非均匀的注意力模式, 这是注意力机制在transformer中的自然现象
+
+**Anchor token**指的是模型在解码过程中高度依赖的摘要性token，即那些在知识聚合阶段起核心作用的token
+
+如果anchor token不准确或信息不充分，就会导致模型在后续生成过程中产生幻觉
+
+而在MLLM中, 视觉 token 的数量往往远多于文本 token, 因此在计算注意力时, 模型更倾向于聚合少量的文本 token
+
+
+
+![alt text](image-2.png)
+
+### CHAIR得分
+
+$$\text{CHAIR Score} = \frac{\text{描述中幻觉内容的数量}}{\text{描述中的所有对象数量}}
+$$
+
+
+## OPERA
+
+缓解幻觉问题的研究通常集中在几个方面，包括改进训练过程、使用更大、更多样化的数据集, 或实施训练后评估, 和纠正机制 
+
+而OPERA是一种**解码策略**, 适用于Beam Search 过程, **无需额外数据或模型微调**
+
+**Over-trust Penalty**: 兼听则明, 偏听则暗, 避免对单一anchor token的过度依赖
+
+**Retrospection-Allocation**: 返工重来
+
+### Beam Search
+
+在生成文本时，每个时间步（token 生成），模型都会计算多个可能的候选 token 及其概率。Beam Search 通过**维护 top-k 个最优候选路径**（称为 Beam Width，束宽），确保在整个解码过程中选择最有可能的序列
+
+- 起始 token（如 sos，start of sentence）开始，获取前 k 个最高概率的 token，作为初始候选序列
+- 对于每个候选序列，在下一个时间步生成可能的 token 及其概率
+- 计算每个扩展序列的总得分(通常是累积的对数概率), 当某个路径遇到终止标记 eos（End of Sentence），就会停止扩展该路径
+- 在每一步路径的扩展过程, 保留前 k 个最优路径，丢弃概率较低的候选
+- 一旦所有存活路径都遇到 eos 或达到最大长度，Beam Search会在最终的k个候选序列中选择得分最高的路径作为最终输出
+
+
+计算量较大, 单生成质量更高, 不易陷入局部最优
+
+## Over-Trust Logit Penalty
+
+![alt text](image-3.png)
+
+**Over-Trust Logit Penalty 计算过程**
+
+**1. 局部窗口注意力提取**
+
+首先，定义局部窗口注意力矩阵 $\mathbf{W}_{t-1}^{k}$，用于分析最近 $ k $ 个 token 之间的注意力模式：
+
+$$
+\mathbf{W}_{t-1}^{k} = \{ \mathbf{w}_{i}^{t-1} \}_{i=t-k}^{t-1}, \quad \text{s.t. } \mathbf{w}^{i} = \{ \omega_{i,j} \}_{j=t-k}^{i}
+$$
+
+其中：
+- $k$ 表示局部窗口大小。
+- $\omega_{i,j}$ 表示 $j$ 号 token 对 $i$ 号 token 的注意力权重。
+
+在示例中，设定 $k=3$，我们只分析最近 3 个 token `"sitting"、"on"、"a"` 的注意力矩阵：
+
+| Token | sitting | on | a |
+|--------|--------|----|----|
+| sitting | 0.4 | 0.2 | 0.05 |
+| on     | 0.2 | 0.4 | 0.2 |
+| a      | 0.05 | 0.2 | 0.4 |
+
+**2. 计算知识聚合模式的强度**
+
+为了找出最可能被过度依赖的 token（anchor token），计算列向量的总注意力权重：
+
+$$
+\sum_{i=j}^{t-1} \sigma \omega_{i,j} = 
+\begin{cases}
+0.4 + 0.2 + 0.05 = 0.65, \quad \text{for sitting} \\
+0.2 + 0.4 + 0.2 = 0.8, \quad \text{for on} \\
+0.05 + 0.2 + 0.4 = 0.65, \quad \text{for a}
+\end{cases}
+$$
+
+选出最大值对应的索引：
+
+$$
+c = \arg\max(0.65, 0.8, 0.65) = \text{"on"}
+$$
+
+即 **"on" 是当前最可能被过度依赖的 token**。
+
+接着，计算知识聚合模式的强度 $\phi(\omega_{<t})$：
+
+$$
+\phi(\omega_{<t}) = \prod_{i=c}^{t-1} \sigma \omega_{i,c}
+$$
+
+具体计算：
+
+$$
+\phi(\omega_{<t}) = 0.2 \times 0.4 \times 0.2 = 0.016
+$$
+
+**3. 影响下一个 token 选择**
+
+假设模型预测下一个 token 的 logits 为：
+
+- `"table"`，logit 值 $ = 2.3 $
+- `"bench"`，logit 值 $ = 2.1 $
+- `"mat"`，logit 值 $ = 1.8 $
+
+结合 Over-Trust Penalty 进行修正：
+
+$$
+p(x_t | x_{<t}) = \text{Softmax}(\mathcal{H}(h_t) - \alpha \phi(\omega_{<t}))
+$$
+
+设定 $\alpha=5$，计算修正后的 logits：
+
+- `"table"`：$2.3 - 5 \times 0.016 = 2.22$
+- `"bench"`：$2.1 - 5 \times 0.016 = 2.02$
+- `"mat"`：$1.8 - 5 \times 0.016 = 1.72$
+
+Softmax 归一化后：
+
+$$
+P(\text{"table"}) = \frac{e^{2.22}}{e^{2.22} + e^{2.02} + e^{1.72}} \approx 0.43
+$$
+
+$$
+P(\text{"bench"}) = \frac{e^{2.02}}{e^{2.22} + e^{2.02} + e^{1.72}} \approx 0.35
+$$
+
+$$
+P(\text{"mat"}) = \frac{e^{1.72}}{e^{2.22} + e^{2.02} + e^{1.72}} \approx 0.22
+$$
+
+最终选择 `"table"` 作为下一个 token。
+
+**4. 总结**
+
+- 计算局部窗口注意力，分析哪些 token 可能是 **anchor token**
+- 计算知识聚合模式的强度 **$\phi(\omega_{<t})$**，衡量模型是否过度依赖某个 token
+- **结合Over-Trust Penalty调整 logits, 降低那些过度依赖某个 anchor token 的候选 token 的分数, 使得“幻觉 token”不易被选中**
+
+
+## Retrospection-Allocation Strategy
+
+
+在某些情况下, 所有的候选 token 都被惩罚, 这意味着, 无论选择哪个 token, 都会导致幻觉, 即模型已经走入了错误的方向
+
+这种情况通常是由于前几个 token 过度依赖 summary token，形成了错误的模式，使得惩罚机制无法有效纠正
+
+如果检测到这种情况，**回滚到 summary token，并重新选择 token**
+
+**Retrospection-Allocation 具体示例**
+
+我们通过一个具体的示例，结合 Retrospection-Allocation 过程中的 **数学公式**，来理解该策略是如何检测 **Anchor Token**，并回滚到 **Summary Token** 重新解码，以减少幻觉。
+
+**1. 设定场景**
+
+假设 MLLM 正在描述一张图片，该图片内容为：
+> **"A cat is sitting on a table, and a dog is playing on the floor."**
+
+在解码过程中，模型已经生成了以下部分：
+> **"A cat is sitting on a chair, and a cat is playing near the window."**
+
+注意：
+- **Ground Truth：应该提到 "dog"，但模型错误地一直关注 "cat"。**
+- **错误：模型错误地使用 "chair" 替代了 "table"，并重复使用 "cat" 进行描述，忽略了 "dog"。**
+
+**2. 检测 Anchor Token**
+
+在解码过程中，模型会计算 **注意力分布**（Self-Attention Weights），假设我们得到的**最近 3 个 token 的局部窗口注意力矩阵**如下：
+
+| Token | sitting | on | a | chair |
+|--------|--------|----|----|----|
+| sitting | 0.4 | 0.2 | 0.05 | 0.05 |
+| on     | 0.2 | 0.4 | 0.2 | 0.05 |
+| a      | 0.05 | 0.2 | 0.4 | 0.2 |
+| chair  | 0.05 | 0.05 | 0.2 | 0.4 |
+
+根据 Retrospection-Allocation 公式，计算**最大列向量得分**，找到最可能被过度依赖的 **Anchor Token**：
+
+$$
+C = \{ c | c = \arg\max_{t-k \leq j \leq z} \prod_{i=j}^{z} \sigma \omega_{i,j}, \quad z \in [t-l, t-1] \}
+$$
+这里 $C$ 代表当前窗口中的 Anchor Token 集合，即最近几个 token 过度依赖的 token
+假设
+$$C= [chair,chair,chair,table,chair]$$
+
+**3. 检测是否需要回滚**
+
+计算重叠(也就是anchor token出现的次数)：
+
+$$
+N_{\text{overlap}} = \sum_{c \in C} \mathbb{1}_{c=s}, \quad \text{s.t. } s = \text{Mode}(C)
+$$
+其中 $Mode(C) = chair$，并且 chair 在过去 5 步中出现了 4 次
+
+如果设定阈值 $r=3$, $N_{\text{overlap}} = 4 \geq r$，触发回滚
+
+
+**4. 进行回滚**
+
+既然 "chair" 受到了过度依赖，我们按照 Retrospection-Allocation 规则：
+- 回滚到 **Summary Token**,或者说最早的Mode(C) 对应的位置
+- 丢弃错误路径 `"chair"`，重新选择 token 进行解码。
+- 选择 **候选 token 集合** $\mathcal{Y}$，避免再选 "chair"。
+
+我们最终重新生成：
+> **"A cat is sitting on a table, and a dog is playing near the window."**
+
+**5. 回滚的约束**
+
+回滚位置$s$不能随意减少, 需要单调递增，确保回滚位置不会比之前的回滚更早,从而导致无限循环
+
+设定最大回滚次数 $\beta$, 如果 $x_s$ 已经达到最大回滚次数 $\beta$(说明$x_s$已经没救了)，那么不再允许回滚到 $x_s$，而是回滚到 $x_{s-1}$
