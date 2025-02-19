@@ -292,3 +292,40 @@ $$
 回滚位置$s$不能随意减少, 需要单调递增，确保回滚位置不会比之前的回滚更早,从而导致无限循环
 
 设定最大回滚次数 $\beta$, 如果 $x_s$ 已经达到最大回滚次数 $\beta$(说明$x_s$已经没救了)，那么不再允许回滚到 $x_s$，而是回滚到 $x_{s-1}$
+
+
+
+# AGLA: Mitigating Object Hallucinations in Large Vision-Language Models with Assembly of Global and Local Attention
+
+这也是一个解码策略, 无需额外的训练
+
+LVLM 主要关注全局图像特征，而未能捕捉到与提示相关的局部特征
+
+AGLA 方法的作用: 利用增强视角，引导 LVLMs 关注查询相关的局部特征，从而减少物体幻觉，提高视觉对齐能力
+
+## 幻觉的产生
+
+幻觉的比例随画面中object数量的增加而增加
+
+![alt text](image-4.png)
+
+
+
+## Image-Prompt Matching
+
+1.   先计算prompt和图像token之间的跨注意力矩阵
+$$
+C = \text{softmax} \left( \frac{X W_T W_V^T Y^T}{\sqrt{D_t}} \right)
+$$
+2.   使用GradCAM计算每个图像patch的重要性得分, 从而使模型知道哪些区域最重要
+$$
+cor(j) = \frac{1}{H} \sum_{i=1}^{M} \sum_{h=1}^{H} \max \left( 0, \frac{\partial sim(v, t)}{\partial C_{ij}^{(h)}} C_{ij}^{(h)} \right)
+$$
+3.   如果某个 patch 的 GradCAM 相关性得分低于阈值, 则屏蔽它; 否则, 保留该patch
+
+
+## Assembly of Global and Local Attentio
+
+IPM策略会屏蔽部分全局特征, 我们需要对此进行弥补, 也就是在解码的时候assemble the logits derived from both the original and augmented images to obtain a calibrated decoding distribution.
+
+但这可能会抑制原始分布中正确的token和提升增强分布中错误的token, 因此在选择增强分布中的token的时候, 是由原始分布中的高概率token才可能被选中
