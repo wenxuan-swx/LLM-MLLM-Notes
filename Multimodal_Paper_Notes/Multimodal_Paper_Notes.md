@@ -1,3 +1,18 @@
+
+
+
+| Method Name                  | Cause of Hallucination                         | Main Idea                                      |
+|------------------------------|-----------------------------------------------|------------------------------------------------|
+| **VCD** | 当视觉输入质量较低时, 幻觉主要来源于其预训练时学习到的语言先验知识, 即模型更倾向于生成符合常识但未必真实存在的对象 | 一种解码策略<br>钓鱼执法: 通过对比原始图像和人为添加噪音后的图像在模型中的logits变化，来检测和削弱幻觉对象. 如果某类信息的 logits 在扭曲图像下明显上升，则表明该信息更可能是由语言先验引发的幻觉 |
+| **OPERA** | 注意力机制是非均匀的. 如果anchor token的信息不准确或不充分, 就有可能使后续生成的内容产生幻觉 |一种解码策略<br> **Over-trust Penalty**: 兼听则明, 偏听则暗, 避免对单一anchor token的过度依赖<br>**Retrospection-Allocation**: 及时反省, 返工重来|
+| **AGLA** | LVLM主要关注全局图像特征, 而未能捕捉到与prompt相关的局部特征 |一种解码策略<br>先计算prompt和图像token之间的跨注意力矩阵, 然后使用GradCAM计算每个图像patch的重要性得分, 屏蔽相关程度较低的patch. 结合局部注意力结果和全局注意力结果一起进行判断|
+| **CCA** | RoPE和1D序列的图像token输入方式会削弱视觉token和文本token之间的联系, 使得在1D序列上较远的视觉token与文本token之间的注意力较弱 |一种编码策略(?)<br>对图像token采用2D的同心编码策略, 从外侧开始进行编码, 一层一层编码, 同一层共享同一个位置编码|
+
+
+
+
+
+
 # Mitigating Object Hallucinations in Large Vision-Language Models through  Visual Contrastive Decoding
 
 当视觉输入质量较低时，多模态大模型的幻觉主要来源于其预训练时学习到的语言先验知识，即模型更倾向于生成符合常识但未必真实存在的对象
@@ -329,3 +344,49 @@ $$
 IPM策略会屏蔽部分全局特征, 我们需要对此进行弥补, 也就是在解码的时候assemble the logits derived from both the original and augmented images to obtain a calibrated decoding distribution.
 
 但这可能会抑制原始分布中正确的token和提升增强分布中错误的token, 因此在选择增强分布中的token的时候, 是由原始分布中的高概率token才可能被选中
+
+
+
+# Mitigating Object Hallucination via Concentric Causal Attention
+
+## 幻觉的产生
+
+旋转位置编码RoPE具有长期衰减效应, 即**当 token 之间的距离增加时, 它们的注意力就会下降**
+
+这个效应在模态对齐时, 将会导致远距离的视觉 token 无法很好地影响文本 token, 从而使得模态对齐能力下降
+
+![alt text](image-5.png)
+
+热力图的亮度表示视觉 token 对文本 token 的影响力，越亮表示信息流越强，越暗表示信息流越弱
+
+可以看见, 加上RoPE之后, 只有右下角的视觉token还对文本token有比较明显的作用, 左边和上面的视觉token作用都比较弱(按token排列来说, 是离文本token比较远的视觉token)
+
+
+### 位置对齐实验
+
+在图像的不同位置粘贴物体后, **采取不同的扫描方式(从左到右vs从右到左)**, 统计对物体识别的正确率
+
+![alt text](image-6.png)
+
+由于旋转位置编码的存在, 导致扫描方式的不同会改变不同区域的识别正确率
+
+## Concentric Causal Attention
+
+CCA的目标: 
+- 减少视觉 token 和指令 token 之间的相对距离，降低 RoPE 的长期衰减效应
+- 消除扫描顺序对模型的影响，使得不同扫描策略下的对齐效果一致
+
+Transformer是一个基于序列的模型, 因此, 视觉token实际上也被展平为1D序列输入. 目前主要采用的方式是
+- 将图像切割为$n\times n$个patch
+- Raster Scan光栅扫描: 从左到右、从上到下 逐行扫描图像 patch
+  
+在这种方式下, 一个长度为$V$的视觉token序列的绝对位置编码如下, 可以看出, 最远的视觉token和文字token(长度为T)之间的距离为$V+T-1$
+![alt text](image-7.png)
+
+而CCA的思想是使用同心排序, 即**最外层的 token 先被编号, 并且同一层的位置编码信息是相同的, 然后逐步向内层编号**. 此时, 最远的最远的视觉token和文字token之间的距离为$\frac{\sqrt{V}}{2}+T-1$
+
+![alt text](image-8.png)
+
+CCA的优点:
+1.   **维持2D局部性**. 在传统1D扫描顺序中, 相邻的视觉token在1D序列中的索引可能相距很远; 在CCA中，视觉token按照空间相似性进行排列，确保**相邻的token 在1D序列中仍然相邻**
+2.   **视觉token和文本token之间的距离更短**, 更容易对齐到文本token
